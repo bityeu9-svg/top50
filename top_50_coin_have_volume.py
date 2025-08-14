@@ -1,200 +1,75 @@
 import requests
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 import time
-import traceback
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import pytz
 
-# ========== CẤU HÌNH ==========
-VIETNAM_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
-TELEGRAM_BOT_TOKEN = "8226246719:AAHXDggFiFYpsgcq1vwTAWv7Gsz1URP4KEU"
+# ===== CONFIG =====
+API_URL = "https://fapi.binance.com/fapi/v1/klines"
+SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT",
+    "DOGEUSDT", "TRXUSDT", "MATICUSDT", "LTCUSDT", "DOTUSDT", "BCHUSDT",
+    "AVAXUSDT", "UNIUSDT", "LINKUSDT", "ETCUSDT", "XLMUSDT", "APTUSDT",
+    "FILUSDT", "SANDUSDT", "ATOMUSDT", "AAVEUSDT", "ICPUSDT", "NEARUSDT",
+    "INJUSDT", "ARBUSDT", "OPUSDT", "DYDXUSDT", "RNDRUSDT", "PEPEUSDT"
+]
+INTERVAL = "15m"
+LIMIT = 50
+MAX_WORKERS = 10  # Giới hạn luồng tránh bị block
+SLEEP_BETWEEN_REQUESTS = 0.05  # Giãn cách request
+PERCENT_THRESHOLD = 0.1  # % phá đỉnh / phá đáy
+TELEGRAM_TOKEN = "8226246719:AAHXDggFiFYpsgcq1vwTAWv7Gsz1URP4KEU"
 TELEGRAM_CHAT_ID = "-4706073326"
-TOP_SYMBOL_LIMIT = 50
-RATE_PERCENT = 2
-RATE_BODY  = 0.66
-RATE_NEN_01_02 = 0.2
 
-
-SYMBOLS = []
-last_fetch_time = None
-
-def send_telegram_alert(message, is_critical=False):
+# ===== HÀM GỬI TELEGRAM =====
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        prefix = "🚨 *CẢNH BÁO NGHIÊM TRỌNG* 🚨\n" if is_critical else "⚠️ *CẢNH BÁO* ⚠️\n"
-        formatted_message = prefix + message
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": formatted_message,
-                "parse_mode": "Markdown"
-            },
-            timeout=10
-        )
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message})
     except Exception as e:
-        print(f"⚠️ Telegram alert error: {e}")
+        print(f"Telegram Error: {e}")
 
-def fetch_top_symbols():
+# ===== HÀM LẤY 50 CÂY NẾN =====
+def fetch_klines(symbol):
     try:
-        print(f"🔁 Lấy danh sách top {TOP_SYMBOL_LIMIT} coin volume cao...")
-        url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
+        params = {"symbol": symbol, "interval": INTERVAL, "limit": LIMIT}
+        response = requests.get(API_URL, params=params, timeout=5)
         data = response.json()
 
-        futures_usdt = [x for x in data if x['symbol'].endswith("USDT") and not x['symbol'].endswith("BUSD")]
-        sorted_by_volume = sorted(futures_usdt, key=lambda x: float(x['quoteVolume']), reverse=True)
+        if isinstance(data, list) and len(data) >= LIMIT:
+            closes = [float(k[4]) for k in data]
+            highs = [float(k[2]) for k in data]
+            lows = [float(k[3]) for k in data]
 
-        symbols = []
-        for item in sorted_by_volume[:TOP_SYMBOL_LIMIT]:
-            symbols.append({
-                "symbol": item["symbol"],
-                "candle_interval": "5m",
-                "limit": 2
-            })
+            last_close = closes[-1]
+            prev_high = max(highs[:-1])
+            prev_low = min(lows[:-1])
 
-        return symbols
+            if last_close >= prev_high * (1 + PERCENT_THRESHOLD / 100):
+                send_telegram(f"{symbol} 📈 Phá đỉnh {PERCENT_THRESHOLD}% - Giá đóng: {last_close}")
+            elif last_close <= prev_low * (1 - PERCENT_THRESHOLD / 100):
+                send_telegram(f"{symbol} 📉 Phá đáy {PERCENT_THRESHOLD}% - Giá đóng: {last_close}")
+
+        time.sleep(SLEEP_BETWEEN_REQUESTS)
     except Exception as e:
-        send_telegram_alert(f"Lỗi lấy top coin:\n```{str(e)}```", is_critical=True)
-        return []
+        print(f"Lỗi lấy dữ liệu {symbol}: {e}")
 
-def fetch_latest_candle(symbol_config):
-    try:
-        url = "https://fapi.binance.com/fapi/v1/klines"
-        params = {
-            "symbol": symbol_config["symbol"],
-            "interval": symbol_config["candle_interval"],
-            "limit": symbol_config["limit"]
-        }
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        # Lấy cây nến đóng cửa gần nhất
-        candle_01 = data[-1]
-        high_01 = float(candle_01[1])
-        low_01 = float(candle_01[3])
-        body_size_01 = abs(high_01 - low_01)
-        # Lấy cây nến đóng cửa gần thứ 2
-        candle_02 = data[-2]
-        high_02 = float(candle_02[1])
-        low_02 = float(candle_02[3])
-        body_size_02 = abs(high_02 - low_02)
-         # So sánh tỉ lệ cây nến đóng gần nhất với case nến trước đó
-        if ((body_size_01 / body_size_02)-1) < RATE_NEN_01_02:
-            print("râu nến đang check không lớn hơn 1.25 nến trước đó!")
-            return None
-        return {
-            "open_time": datetime.fromtimestamp(candle_01[0] / 1000).replace(tzinfo=ZoneInfo("UTC")),
-            "open": float(candle_01[1]),
-            "high": float(candle_01[2]),
-            "low": float(candle_01[3]),
-            "close": float(candle_01[4])
-        }
-    except Exception as e:
-        print(f"Lỗi lấy nến {symbol_config['symbol']}: {e}")
-        return None
-
-def analyze_candle(candle):
-    try:
-        open_price = candle["open"]
-        high_price = candle["high"]
-        low_price = candle["low"]
-        close_price = candle["close"]
-
-        upper = high_price - max(open_price, close_price)
-        upper_percent = (upper / max(open_price, close_price)) * 100 if max(open_price, close_price) > 0 else 0
-
-        lower = min(open_price, close_price) - low_price
-        lower_percent = (lower / low_price) * 100 if low_price > 0 else 0
-
-        candle_type = "other"
-        if lower_percent >= RATE_PERCENT and lower / (high_price - low_price) >= RATE_BODY:
-            candle_type = "Râu nến dưới"
-        elif upper_percent >= RATE_PERCENT and upper / (high_price - low_price) >= RATE_BODY:
-            candle_type = "Râu nến trên"
-
-        return {
-            "candle_type": candle_type,
-            "open": open_price,
-            "high": high_price,
-            "low": low_price,
-            "close": close_price,
-            "upper_wick_percent": round(upper_percent, 2),
-            "lower_wick_percent": round(lower_percent, 2),
-            "trend_direction": "LONG" if candle_type == "Râu nến dưới" else "SHORT" if candle_type == "Râu nến trên" else "-"
-        }
-    except Exception as e:
-        send_telegram_alert(f"Lỗi phân tích nến:\n```{str(e)}```", is_critical=True)
-        return None
-
-def send_telegram_notification(symbol, candle, analysis):
-    if analysis["candle_type"] == "other":
-        return
-
-    msg = f"""
-📊 *{symbol} - Nến {analysis['candle_type'].upper()}* lúc {datetime.now(VIETNAM_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}
-━━━━━━━━━━━━━━
-📈 Open: {analysis['open']:.8f}
-📉 Close: {analysis['close']:.8f}
-🔺 High: {analysis['high']:.8f}
-🔻 Low: {analysis['low']:.8f}
-━━━━━━━━━━━━━━
-🔼 Râu trên: {analysis['upper_wick_percent']:.4f}%
-🔽 Râu dưới: {analysis['lower_wick_percent']:.4f}%
-🎯 Long/Short?: {analysis['trend_direction']}"""
-
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": msg,
-                "parse_mode": "Markdown"
-            },
-            timeout=10
-        )
-    except Exception as e:
-        print(f"❌ Telegram error: {e}")
-
-def should_refresh_symbols():
-    global last_fetch_time
-    if last_fetch_time is None or (datetime.now() - last_fetch_time) >= timedelta(hours=24):
-        return True
-    return False
-
-def main():
-    global SYMBOLS, last_fetch_time
-
-    print("🟢 Bot đang chạy...")
-    send_telegram_alert(f"Start server 50 coin", is_critical=False)
-
+# ===== CHẠY VÔ HẠN =====
+def run():
+    tz_vn = pytz.timezone("Asia/Ho_Chi_Minh")
     while True:
-        try:
-            now_utc = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
+        now_vn = datetime.now(tz_vn)
+        if now_vn.minute % 15 == 0 and now_vn.second == 0:
+            print(f"==> Bắt đầu check lúc {now_vn.strftime('%H:%M:%S')}")
 
-            if should_refresh_symbols():
-                SYMBOLS = fetch_top_symbols()
-                last_fetch_time = datetime.now()
-                print(f"✅ Cập nhật SYMBOLS lúc {last_fetch_time}")
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                executor.map(fetch_klines, SYMBOLS)
 
-            if now_utc.minute % 5 == 0 and now_utc.second < 3:
-                print(f"\n⏱ Kiểm tra lúc {datetime.now(VIETNAM_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}")
-                for sym in SYMBOLS:
-                    candle = fetch_latest_candle(sym)
-                    if not candle:
-                        continue
-                    analysis = analyze_candle(candle)
-                    if analysis:
-                        print(f"✔️ {sym['symbol']} | {analysis['candle_type']} | Râu nến trên: {analysis['upper_wick_percent']:.4f}% | % Râu nến dưới: {analysis['lower_wick_percent']:.4f}%")
-                        send_telegram_notification(sym['symbol'], candle, analysis)
-
-                time.sleep(300 - now_utc.second % 60)  # Đợi hết 1 phút tránh trùng
-            else:
-                time.sleep(1)
-        except Exception as e:
-            error_msg = f"LỖI VÒNG LẶP:\n{e}\n{traceback.format_exc()}"
-            print(error_msg)
-            send_telegram_alert(f"```{error_msg}```", is_critical=True)
-            time.sleep(10)
+            wait_seconds = 15 * 60 - (datetime.now(tz_vn).minute % 15) * 60 - datetime.now(tz_vn).second
+            print(f"Ngủ {wait_seconds} giây...")
+            time.sleep(wait_seconds)
+        else:
+            time.sleep(0.5)
 
 if __name__ == "__main__":
-    main()
+    run()
