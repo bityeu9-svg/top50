@@ -176,7 +176,7 @@ def main():
                 last_fetch_time = datetime.now()
                 print(f"✅ Cập nhật SYMBOLS lúc {last_fetch_time}")
 
-            if now_utc.minute % 5 == 0 and now_utc.second < 3:
+            if now_utc.minute % 15 == 0 and now_utc.second < 20:
                 print(f"\n⏱ Kiểm tra lúc {datetime.now(VIETNAM_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}")
                 for sym in SYMBOLS:
                     candle = fetch_latest_candle(sym)
@@ -187,7 +187,7 @@ def main():
                         print(f"✔️ {sym['symbol']} | {analysis['candle_type']} | Râu nến trên: {analysis['upper_wick_percent']:.4f}% | % Râu nến dưới: {analysis['lower_wick_percent']:.4f}%")
                         send_telegram_notification(sym['symbol'], candle, analysis)
 
-                time.sleep(300 - now_utc.second % 60)  # Đợi hết 1 phút tránh trùng
+                time.sleep(900 - now_utc.second % 60)  # Đợi hết 15 phút tránh trùng
             else:
                 time.sleep(1)
         except Exception as e:
