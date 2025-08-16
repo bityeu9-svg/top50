@@ -165,7 +165,7 @@ def main():
     global SYMBOLS, last_fetch_time
 
     print("🟢 Bot đang chạy...")
-    send_telegram_alert(f"Start server 200 coin", is_critical=False)
+    send_telegram_alert(f"Start server 50 coin", is_critical=False)
 
     while True:
         try:
@@ -176,7 +176,7 @@ def main():
                 last_fetch_time = datetime.now()
                 print(f"✅ Cập nhật SYMBOLS lúc {last_fetch_time}")
 
-            if now_utc.minute % 15 == 0 and now_utc.second < 20:
+            if now_utc.minute % 15 == 0 and now_utc.second < 10:
                 print(f"\n⏱ Kiểm tra lúc {datetime.now(VIETNAM_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}")
                 for sym in SYMBOLS:
                     candle = fetch_latest_candle(sym)
